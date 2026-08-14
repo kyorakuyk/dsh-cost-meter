@@ -19,11 +19,23 @@ table, and expose a per-(provider, model) cost breakdown.
 ## Install
 
 ```sh
-dsh plugin --profile web add https://github.com/<you>/dsh-cost-meter/archive/refs/tags/v0.1.0.tar.gz
+dsh plugin --profile web add https://github.com/kyorakuyk/dsh-cost-meter/archive/refs/tags/v0.1.0.tar.gz
 ```
 
 Or link the package into the profile's module directory and add the plugin row
 from `cordis.patch.yml` manually.
+
+## Dependency model (opt-in by design)
+
+- **True runtime peers** (required): `@deepseek-ai/cordis`, `@deepseek-ai/schemastery`,
+  `@deepseek-ai/dsh-settings` — the host half's `lib/index.js` imports only these.
+- **Optional peers** (`peerDependenciesMeta.optional`): `dsh-session`, `dsh-llm`,
+  `dsh-host-webserver`, `dsh-session-persistence-jsonl`, `dsh-client-*`, `react` —
+  type-only, client-bundle, or CLI-only. A headless/minimal profile installs the
+  plugin without them; runtime seams degrade gracefully (`ctx.inject` for
+  settings/webServer, `ctx.get` for token-meter, no-op without them).
+- `lib/` is committed, so tarball installs need no build; git installs run
+  `prepare` (requires the standard `allowBuilds` entry in the profile).
 
 ## Configure
 

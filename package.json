@@ -44,11 +44,6 @@
     "cordis.patch.yml",
     "README.md"
   ],
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "koffi"
-    ]
-  },
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

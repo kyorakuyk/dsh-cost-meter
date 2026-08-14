@@ -268,9 +268,12 @@ describe('layered resolver (M2a)', () => {
       manual: { 'deepseek-official': { default: { input: 9, output: 9 } } },
       snapshot: { enabled: true, preferSnapshots: false, table: DEEPSEEK_SNAPSHOT },
     })
-    expect(resolver('deepseek-official', 'deepseek-v4-flash', 0)).toEqual({
+    expect(resolver('deepseek-official', 'deepseek-v4-flash', 0)).toMatchObject({
       rate: { input: 9, output: 9 },
       source: 'manual',
+      // manual differs from the fresh snapshot → flagged outdated
+      outdated: true,
+      latestSource: 'snapshot',
     })
   })
 
@@ -307,9 +310,11 @@ describe('layered resolver (M2a)', () => {
       manual: { openrouter: { default: { input: 1, output: 2 } } },
       openrouter: { enabled: true, overwrite: false, lookup: fetched },
     })
-    expect(plain('openrouter', 'deepseek/deepseek-chat', 0)).toEqual({
+    expect(plain('openrouter', 'deepseek/deepseek-chat', 0)).toMatchObject({
       rate: { input: 1, output: 2 },
       source: 'manual',
+      outdated: true,
+      latestSource: 'openrouter',
     })
     const overwrite = createPriceResolver({
       manual: { openrouter: { default: { input: 1, output: 2 } } },

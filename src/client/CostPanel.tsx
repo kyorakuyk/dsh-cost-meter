@@ -61,6 +61,27 @@ export function CostPanel(_props: CostPanelProps): JSX.Element {
         <div style={{ color: '#c0392b', fontSize: '12px' }}>加载失败：{error}</div>
       )}
 
+      {view.outdated.length > 0 && (
+        <section style={{ border: '1px solid #e67e22', borderRadius: '4px', padding: '8px', background: '#fef9f0' }}>
+          <h3 style={{ fontSize: '13px', margin: '0 0 6px', color: '#b9770e' }}>⚠️ 定价可能已过时</h3>
+          <div style={{ fontSize: '12px' }}>
+            以下手填价与最新已知价（{view.outdated[0]?.source}）不一致，请核对官方定价：
+          </div>
+          {view.outdated.map((o) => (
+            <div key={`${o.provider}:${o.model}`} style={{ fontSize: '12px', marginTop: '4px', display: 'flex', justifyContent: 'space-between' }}>
+              <span>{o.provider} / {o.model}</span>
+              <span>手填 {o.manual} → 最新 {o.latest}</span>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {view.snapshot.stale && (
+        <div style={{ color: '#b9770e', fontSize: '12px' }}>
+          内置快照（{view.snapshot.date}）可能已过期，请核对官方价格。
+        </div>
+      )}
+
       {budgeted.length > 0 && (
         <section>
           <h3 style={{ fontSize: '13px', margin: '0 0 6px' }}>预算</h3>

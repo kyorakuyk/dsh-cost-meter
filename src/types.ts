@@ -185,6 +185,16 @@ export interface ResolvedPrice {
   window?: string
   /** effectiveFrom of the price version that applied, when history matched one. */
   versionFrom?: number
+  /**
+   * true when a MANUAL price was applied but an automatic source (OpenRouter
+   * fetch, or a fresh built-in snapshot) prices the same pair differently —
+   * the manual price may be outdated (M4.1).
+   */
+  outdated?: boolean
+  /** The newer rate from the automatic source, when {@link outdated}. */
+  latestRate?: Rate
+  /** Which automatic source holds {@link latestRate}. */
+  latestSource?: 'openrouter' | 'snapshot'
 }
 
 /** Layered price resolution: manual → openrouter → snapshot, in caller-chosen precedence. */
@@ -216,6 +226,26 @@ export interface CostEntry {
   priceSource?: PriceSource
   /** Matched peak/off-peak window label (e.g. "off-peak"), when a window applied. */
   window?: string
+  /** Rate applied to the most recent priced call (last-wins, like window). */
+  appliedRate?: Rate
+  /** true when a manual price was applied that an automatic source prices differently. */
+  priceOutdated?: boolean
+  /** The newer rate from the automatic source, when {@link priceOutdated}. */
+  latestRate?: Rate
+  /** Which automatic source holds {@link latestRate}. */
+  latestSource?: 'openrouter' | 'snapshot'
+}
+
+/** A manual price that an automatic source prices differently (M4.1). */
+export interface OutdatedPrice {
+  provider: string
+  model: string
+  /** The manual rate that was applied. */
+  manualRate: Rate
+  /** The newer rate from an automatic source. */
+  latestRate: Rate
+  /** Which automatic source holds the newer rate. */
+  latestSource: 'openrouter' | 'snapshot'
 }
 
 /** A (provider, model) pair that produced usage but has no configured rate. */
@@ -234,4 +264,6 @@ export interface CostReport {
   entries: CostEntry[]
   /** Calls that hit no configured rate, in stable provider/model order. */
   unpriced: UnpricedEntry[]
+  /** Manual prices that an automatic source prices differently (M4.1). */
+  outdated: OutdatedPrice[]
 }

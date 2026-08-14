@@ -111,6 +111,21 @@ cost-meter:
 - **Change notification**: `cost-meter/price-changed` fires when an OpenRouter
   refresh produces a different table or settings change the pricing config.
 
+### Outdated-price warning (M4.1)
+
+Manual prices are authoritative, but a stale manual price is silently wrong.
+When a manual price is applied and an automatic source prices the same pair
+differently, the entry is flagged and the surfaces warn:
+
+- `CostReport.outdated[]` / `ctx.costMeter.collectOutdated()` — the pairs, with
+  the manual and latest rates and the source.
+- Web panel banner: **⚠️ 定价可能已过时** (手填 X → 最新 Y).
+- CLI: `dsh-cost-meter audit` prints the outdated pairs after the bill.
+
+OpenRouter fetch always participates (it is live); the built-in snapshot
+participates only while it is not flagged stale — a stale snapshot cannot cry
+wolf, and it still prices as before.
+
 ## Budgets & alerts (M2b)
 
 ```yaml

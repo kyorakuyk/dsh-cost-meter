@@ -42,6 +42,7 @@ import type {
   CostReport,
   NotifyConfig,
   OpenRouterAutoPricing,
+  OutdatedPrice,
   PriceResolver,
   ProviderPricing,
   Rate,
@@ -63,15 +64,20 @@ export type {
   EntryUsage,
   NotifyConfig,
   OpenRouterAutoPricing,
+  OutdatedPrice,
   PriceResolver,
   PriceSource,
   ProviderPricing,
   Rate,
+  RateLike,
+  RateSpec,
+  RateVersion,
+  RateWindow,
   ResolvedPrice,
   SnapshotConfig,
   UnpricedEntry,
 } from './types.ts'
-export { costOf, resolveRate, resolveScheduled, TOKENS_PER_UNIT } from './pricing.ts'
+export { costOf, resolveRate, resolveScheduled, sameRate, TOKENS_PER_UNIT } from './pricing.ts'
 export { assertLedgerConsistent, createLedgerState, foldEvent, toReport } from './ledger.ts'
 export type { LedgerState } from './ledger.ts'
 export { aggregateCosts, dayKey, monthKey, NO_PROJECT } from './aggregate.ts'
@@ -140,6 +146,8 @@ export interface CostOverview {
   standings: BudgetStanding[]
   /** Built-in snapshot freshness (M4). */
   snapshot: { date: string; stale: boolean; staleAfterDays: number }
+  /** Manual prices that an automatic source prices differently (M4.1). */
+  outdated: OutdatedPrice[]
 }
 
 const RateSchema = z.object({
@@ -510,7 +518,24 @@ export class CostMeter extends Service {
       aggregate: aggregateCosts(this.tracked, this.resolver),
       standings: this.buildStandings(),
       snapshot: this.snapshotStatus(),
+      outdated: this.collectOutdated(),
     }
+  }
+
+  /**
+   * Manual prices that an automatic source prices differently, across every
+   * tracked session (deduplicated by provider/model). Surfaces turn a silent
+   * stale-manual-price into a visible warning (M4.1).
+   * @returns the outdated pairs.
+   */
+  collectOutdated(): OutdatedPrice[] {
+    const seen = new Map<string, OutdatedPrice>()
+    for (const session of this.tracked) {
+      for (const entry of toReport(this._sync(session)).outdated) {
+        seen.set(`${entry.provider}\u0000${entry.model}`, entry)
+      }
+    }
+    return [...seen.values()]
   }
 
   /**
@@ -579,6 +604,9 @@ export class CostMeter extends Service {
         enabled: normalized.snapshot.enabled,
         preferSnapshots: normalized.snapshot.preferSnapshots,
         table: DEEPSEEK_SNAPSHOT,
+        // A stale snapshot does not participate in outdated detection: a
+        // warning against an outdated table would cry wolf.
+        stale: snapshotStaleAt(Date.now()),
       },
     })
   }

@@ -99,6 +99,16 @@ async function audit(args) {
   for (const u of report.unpriced) {
     console.log(`[UNPRICED] ${u.provider} / ${u.model}  calls=${u.calls}`)
   }
+  if (report.outdated.length > 0) {
+    console.log('')
+    console.log('⚠️  以下手填价可能已过时（与自动来源不一致）：')
+    for (const o of report.outdated) {
+      console.log(
+        `  ${o.provider} / ${o.model}: 手填 in=${o.manualRate.input} out=${o.manualRate.output}`
+        + ` → ${o.latestSource} in=${o.latestRate.input} out=${o.latestRate.output}`,
+      )
+    }
+  }
   console.log('')
   console.log(`TOTAL     $${report.totalCost.toFixed(6)}`)
 

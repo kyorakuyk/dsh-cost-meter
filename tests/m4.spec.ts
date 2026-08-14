@@ -8,6 +8,7 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import CostMeter, {
   createPriceResolver,
+  DEEPSEEK_SNAPSHOT,
   foldEvent,
   resolveScheduled,
   SNAPSHOT_DATE,
@@ -144,6 +145,76 @@ describe('snapshot staleness (M4)', () => {
     expect(snapshotStaleAt(verified + 10 * 86_400_000)).toBe(false)
     expect(snapshotStaleAt(verified + 60 * 86_400_000)).toBe(true)
     expect(snapshotStaleAt(verified + 10 * 86_400_000, SNAPSHOT_DATE, 5)).toBe(true)
+  })
+})
+
+describe('outdated-price detection (M4.1)', () => {
+  const OPENROUTER_MANUAL: NonNullable<CostMeterConfig['pricing']> = {
+    openrouter: { default: { rate: { input: 1, output: 2 } } },
+  }
+
+  it('flags a manual openrouter price that differs from the fetched price', () => {
+    const resolver = createPriceResolver({
+      manual: OPENROUTER_MANUAL,
+      openrouter: { enabled: true, overwrite: false, lookup: () => ({ input: 0.1, output: 0.2 }) },
+    })
+    const resolved = resolver('openrouter', 'deepseek/deepseek-chat', PEAK)
+    expect(resolved).toMatchObject({
+      source: 'manual',
+      rate: { input: 1, output: 2 },
+      outdated: true,
+      latestSource: 'openrouter',
+      latestRate: { input: 0.1, output: 0.2 },
+    })
+  })
+
+  it('does not flag a manual price that matches the fetched price', () => {
+    const resolver = createPriceResolver({
+      manual: { openrouter: { default: { rate: { input: 0.1, output: 0.2 } } } },
+      openrouter: { enabled: true, overwrite: false, lookup: () => ({ input: 0.1, output: 0.2 }) },
+    })
+    expect(resolver('openrouter', 'x', PEAK)?.outdated).toBeUndefined()
+  })
+
+  it('skips outdated detection against a stale snapshot but still prices with it', () => {
+    const resolver = createPriceResolver({
+      manual: { 'deepseek-official': { default: { rate: { input: 9, output: 9 } } } },
+      snapshot: { enabled: true, preferSnapshots: false, table: DEEPSEEK_SNAPSHOT, stale: true },
+    })
+    // manual still wins, no outdated flag (stale snapshot cannot cry wolf)
+    expect(resolver('deepseek-official', 'deepseek-v4-flash', PEAK)?.outdated).toBeUndefined()
+    // an unpriced manual pair still falls back to the snapshot for pricing
+    const fallback = createPriceResolver({
+      manual: {},
+      snapshot: { enabled: true, preferSnapshots: false, table: DEEPSEEK_SNAPSHOT, stale: true },
+    })
+    expect(fallback('deepseek-official', 'deepseek-v4-flash', PEAK)).toMatchObject({
+      source: 'snapshot',
+      rate: { input: 0.27, output: 1.10 },
+    })
+  })
+
+  it('surfaces outdated pairs in reports and the service overview', () => {
+    const resolver = createPriceResolver({
+      manual: OPENROUTER_MANUAL,
+      openrouter: { enabled: true, overwrite: false, lookup: () => ({ input: 0.1, output: 0.2 }) },
+    })
+    const state = createLedgerState()
+    foldEvent(state, {
+      type: 'request/header', seq: 0, time: PEAK,
+      data: { header: { config: { provider: 'openrouter', model: 'deepseek/deepseek-chat' } }, reason: 'initial' },
+    }, resolver)
+    foldEvent(state, usageEvent(1, PEAK, 1_000_000), resolver)
+    const report = toReport(state)
+    expect(report.outdated).toHaveLength(1)
+    expect(report.outdated[0]).toMatchObject({
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-chat',
+      latestSource: 'openrouter',
+    })
+    expect(report.outdated[0]?.manualRate.input).toBe(1)
+    expect(report.outdated[0]?.latestRate.input).toBe(0.1)
+    expect(report.entries[0]?.priceOutdated).toBe(true)
   })
 })
 

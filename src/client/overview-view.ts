@@ -7,7 +7,7 @@
  * @module dsh-cost-meter/client/overview-view
  */
 
-import type { CostOverview } from '../index.ts'
+import type { CostOverview, OutdatedPrice } from '../index.ts'
 
 /** One project line. */
 export interface ProjectView {
@@ -25,6 +25,15 @@ export interface StandingView {
   pct?: number
 }
 
+/** One outdated manual price line. */
+export interface OutdatedView {
+  provider: string
+  model: string
+  manual: string
+  latest: string
+  source: string
+}
+
 /** The flattened panel view. */
 export interface OverviewView {
   totalCost: number
@@ -33,6 +42,10 @@ export interface OverviewView {
   projects: ProjectView[]
   months: { key: string; cost: number }[]
   standings: StandingView[]
+  /** Manual prices an automatic source prices differently. */
+  outdated: OutdatedView[]
+  /** Built-in snapshot freshness. */
+  snapshot: { date: string; stale: boolean }
 }
 
 /** Format USD with two decimals and a thousands separator. */
@@ -56,5 +69,20 @@ export function toOverviewView(payload: CostOverview | undefined): OverviewView 
     projects,
     months,
     standings: payload?.standings ?? [],
+    outdated: (payload?.outdated ?? []).map(toOutdatedView),
+    snapshot: {
+      date: payload?.snapshot?.date ?? '',
+      stale: payload?.snapshot?.stale ?? false,
+    },
+  }
+}
+
+function toOutdatedView(price: OutdatedPrice): OutdatedView {
+  return {
+    provider: price.provider,
+    model: price.model,
+    manual: formatUsd(price.manualRate.input) + '/' + formatUsd(price.manualRate.output),
+    latest: formatUsd(price.latestRate.input) + '/' + formatUsd(price.latestRate.output),
+    source: price.latestSource,
   }
 }

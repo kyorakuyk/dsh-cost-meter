@@ -123,6 +123,21 @@ cost-meter:
 - 快照过期检测：`SNAPSHOT_DATE` 距今 > `SNAPSHOT_STALE_AFTER_DAYS`（默认 30）→ `overview().snapshot.stale` 置位，面板提示"请核对官方价格"；
 - `cost-meter/price-changed` 事件：OpenRouter 刷新检测到价格变化 / settings 定价变更时触发（webhook/通知可订阅）。
 
+### 4.4 过时定价检测（M4.1）——把"静默错误"变"可见警告"
+
+**动机**：`手填 > 抓取 > 快照` 保证不瞎算，但手填价过时时系统会**静默沿用旧价**——审计"安全"却可能"错误"。应在手填价与最新已知价不符时提醒"该定价可能已过时"。
+
+**机制**（`resolver.ts` + `sameRate`）：
+- 手填价生效时，与自动来源对比（归一化 input/output/cache，cache 缺省按 input）：
+  - **OpenRouter 抓取价**：实时来源，**始终参与**对比；
+  - **内置快照价**：**仅当快照未过期时**参与（`snapshot.stale` 置位时跳过——过期快照不能"狼来了"）；快照**仍照常定价**，staleness 只影响检测不影响定价。
+- 差异命中 → `ResolvedPrice.outdated` + `latestRate` + `latestSource`；
+- `CostEntry.priceOutdated/latestRate/latestSource/appliedRate` 记录（last-wins）；
+- `CostReport.outdated[]`（provider/model/手填价/最新价/来源）→ **Web 面板横幅"⚠️ 定价可能已过时"** + **CLI audit 打印提醒**；
+- `overview().outdated`（跨 tracked 会话去重）。
+
+**审计意义**：账本仍用手填权威价（不猜测），但差异被显式暴露——用户被告知"你可能在用旧价"。
+
 ## 5. 数据流
 
 ```
@@ -154,7 +169,7 @@ provider 上报 usage (session.event / tokenUsage 投影)
 | **M2a 自动定价来源** ✅ 已实现 | **B. OpenRouter 自动抓取**（`src/openrouter.ts`：`GET /api/v1/models` → 缓存 `$DSH_HOME/costs/pricing.openrouter.json`，`refreshHours` 刷新、失败沿用旧缓存 + 告警，并发刷新共享一次 in-flight）；**C. DeepSeek 内置快照表**（`src/snapshot.ts`，`SNAPSHOT_DATE` 标注）；**分层 resolver**（`src/resolver.ts`：手填 > 抓取 > 快照，`overwrite`/`preferSnapshots` 翻转）；`CostEntry.priceSource` 记录来源 | 31 个单测（含 mock fetch/时钟/并发/优先级/来源标记）+ typecheck + build + 冒烟 |
 | **M2b 聚合与告警** ✅ 已实现 | **聚合**（`src/aggregate.ts`：`aggregateCost(sessions)` 按天/月/项目分桶，纯函数可审计）；**预算**（`src/budget.ts`：session/project/month 三档金额 + 阈值 [50,80,100] 幂等触发）；**告警**（`ctx.emit('cost-meter/budget-alert')` 事件 + log 双通道，turn/end 自动评估，`budgetStatus()`/`evaluateBudgets()` 可按需调用）；`tracked` 会话宇宙自动登记（观察器 + `_sync`） | 41 个单测 + typecheck + build + 端到端冒烟（聚合分桶/站位/事件幂等） |
 | **M3 UI 与导出** ✅ 已实现 | **Web 成本面板**（`src/client/`：注册 `settings.section`"成本"页，经 host 的 `webServer` 路由 `/cost-meter/api/overview` 拉取 `overview()` 快照；纯数据 prep `overview-view.ts` 可测）；**CSV/JSONL 导出**（`src/export.ts` 纯函数：`sessionRows`/`bucketRows`/`toCsv`/`toJsonl`）；**CLI**（`bin/dsh-cost-meter.mjs`：`audit` + `export` 子命令，`npx dsh-cost-meter …` 即用；`scripts/audit.mjs` 改为薄包装） | 48 个单测 + typecheck + build（node + client 双 bundle）+ 端到端（HTTP 路由 200 + CLI 全子命令） |
-| **M4 调度定价** ✅ 已实现 | **时间感知定价**（`src/schedule.ts`：`resolveSpecAt(spec, atTime)` 版本选择 `effectiveFrom/effectiveUntil` + 峰谷窗口 `[from,to)` 跨午夜 + tz（默认 Asia/Shanghai））；**折叠按事件时间选价**（`foldEvent` 传 `event.time`，旧事件永远按旧价——append-only 价格历史，审计稳定）；**快照过期检测**（`snapshotStaleAt` + `overview().snapshot.stale`，30 天阈值）；**`cost-meter/price-changed` 事件**（OpenRouter 刷新差异 / settings 定价变更）；`CostEntry.window` 记录峰谷标签 | 59 个单测（新增 11 个：时段/版本/过期/事件/一致性）+ typecheck + build + 冒烟（峰谷+调价实测） |
+| **M4 调度定价** ✅ 已实现 | **时间感知定价**（`src/schedule.ts`：`resolveSpecAt(spec, atTime)` 版本选择 `effectiveFrom/effectiveUntil` + 峰谷窗口 `[from,to)` 跨午夜 + tz（默认 Asia/Shanghai））；**折叠按事件时间选价**（`foldEvent` 传 `event.time`，旧事件永远按旧价——append-only 价格历史，审计稳定）；**快照过期检测**（`snapshotStaleAt` + `overview().snapshot.stale`，30 天阈值）；**`cost-meter/price-changed` 事件**（OpenRouter 刷新差异 / settings 定价变更）；`CostEntry.window` 记录峰谷标签；**M4.1 过时定价检测**（手填价 vs 最新已知价差异 → `outdated` 标记 + `CostReport.outdated[]` + 面板横幅 + CLI 提醒） | 63 个单测（新增 15 个：时段/版本/过期/事件/过时检测/一致性）+ typecheck + build + 冒烟（峰谷+调价+过时检测实测） |
 | **上游（可选）** | **A. 向官方提 PR**：给 `LlmResolvedModelInfo` 加 `cost` 字段，让 `ctx.llm.listModels/resolveModelInfo` 暴露 pi-ai 目录里已有的 `Model.cost`——成了则自动定价可直达目录价 | 上游合并后插件读公共接缝即可 |
 
 ## 7. 风险与边界

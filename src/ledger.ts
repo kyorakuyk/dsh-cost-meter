@@ -14,7 +14,7 @@
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { costOf } from './pricing.ts'
-import type { CostEntry, CostReport, EntryUsage, PriceResolver, UnpricedEntry } from './types.ts'
+import type { CostEntry, CostReport, EntryUsage, OutdatedPrice, PriceResolver, UnpricedEntry } from './types.ts'
 
 /** Mutable fold state for one session. */
 export interface LedgerState {
@@ -120,6 +120,12 @@ function foldUsage(
     entry.priced = true
     entry.priceSource = resolved.source
     if (resolved.window !== undefined) entry.window = resolved.window
+    entry.appliedRate = resolved.rate
+    if (resolved.outdated === true) {
+      entry.priceOutdated = true
+      if (resolved.latestRate !== undefined) entry.latestRate = resolved.latestRate
+      if (resolved.latestSource !== undefined) entry.latestSource = resolved.latestSource
+    }
     state.totalCost += costOf(usage, resolved.rate)
     return
   }
@@ -147,6 +153,10 @@ function cloneEntry(entry: CostEntry): CostEntry {
     priced: entry.priced,
     ...(entry.priceSource === undefined ? {} : { priceSource: entry.priceSource }),
     ...(entry.window === undefined ? {} : { window: entry.window }),
+    ...(entry.appliedRate === undefined ? {} : { appliedRate: { ...entry.appliedRate } }),
+    ...(entry.priceOutdated === undefined ? {} : { priceOutdated: entry.priceOutdated }),
+    ...(entry.latestRate === undefined ? {} : { latestRate: { ...entry.latestRate } }),
+    ...(entry.latestSource === undefined ? {} : { latestSource: entry.latestSource }),
   }
 }
 
@@ -168,6 +178,23 @@ export function assertLedgerConsistent(state: LedgerState): void {
   }
 }
 
+/** Outdated-priced pairs for the report, from entries flagged during the fold. */
+function collectOutdated(entries: readonly CostEntry[]): OutdatedPrice[] {
+  const outdated: OutdatedPrice[] = []
+  for (const entry of entries) {
+    if (entry.priceOutdated !== true || entry.appliedRate === undefined
+      || entry.latestRate === undefined || entry.latestSource === undefined) continue
+    outdated.push({
+      provider: entry.provider,
+      model: entry.model,
+      manualRate: { ...entry.appliedRate },
+      latestRate: { ...entry.latestRate },
+      latestSource: entry.latestSource,
+    })
+  }
+  return outdated.sort(byProviderModel)
+}
+
 /**
  * Detached immutable-by-convention report over the current fold state.
  * @param state - ledger state.
@@ -177,5 +204,5 @@ export function toReport(state: LedgerState): CostReport {
   assertLedgerConsistent(state)
   const entries = [...state.entries.values()].sort(byProviderModel).map(cloneEntry)
   const unpriced = [...state.unpriced.values()].sort(byProviderModel).map((u) => ({ ...u }))
-  return { totalCost: state.totalCost, entries, unpriced }
+  return { totalCost: state.totalCost, entries, unpriced, outdated: collectOutdated(entries) }
 }

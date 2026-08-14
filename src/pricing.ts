@@ -74,3 +74,18 @@ export function costOf(usage: TokenUsage, rate: Rate): number {
   const cacheWrite = (usage.cacheWriteTokens ?? 0) / TOKENS_PER_UNIT * (rate.cacheWrite ?? rate.input)
   return input + output + cacheRead + cacheWrite
 }
+
+/**
+ * Whether two rates price the same, comparing normalized buckets (absent cache
+ * rates default to the input rate). Used by the outdated-price detector to
+ * decide whether a manual price differs from an automatic source's.
+ * @param left - one rate.
+ * @param right - the other rate.
+ * @returns true when every priced bucket is identical.
+ */
+export function sameRate(left: Rate, right: Rate): boolean {
+  return left.input === right.input
+    && left.output === right.output
+    && (left.cacheRead ?? left.input) === (right.cacheRead ?? right.input)
+    && (left.cacheWrite ?? left.input) === (right.cacheWrite ?? right.input)
+}

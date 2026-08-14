@@ -1,0 +1,8 @@
+# The dsh-cost-meter bundle: one plugin row mounting the host half.
+#
+# The node half (the package's "." entry) registers the `cost-meter` settings
+# namespace (pricing table) and the `ctx.costMeter` service. M1 has no browser
+# half; the Web cost panel lands in M3.
+- insert:
+    - id: cost-meter
+      name: dsh-cost-meter

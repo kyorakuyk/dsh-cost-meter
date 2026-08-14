@@ -70,7 +70,7 @@ export function aggregateCosts(sessions: Iterable<Session>, resolve: PriceResolv
         case 'assistant/message': {
           const usage = event.data.usage
           if (usage === undefined || provider === undefined || model === undefined) break
-          const resolved = resolve(provider, model)
+          const resolved = resolve(provider, model, event.time)
           const cost = resolved === undefined ? 0 : costOf(usage, resolved.rate)
           const unpriced = resolved === undefined
           const day = dayKey(event.time)

@@ -79,6 +79,38 @@ cost-meter:
     enabled: false         # opt-in: built-in DeepSeek snapshot (verify SNAPSHOT_DATE first)
 ```
 
+## Scheduled pricing (M4 — price changes & peak/off-peak)
+
+DeepSeek announced a major API price increase and peak/off-peak pricing
+(effective 2026-08-17). The pricing table is now time-aware: a rate can carry
+recurring time-of-day windows and an append-only price history, and every call
+is priced at the instant it happened (`event.time`).
+
+```yaml
+cost-meter:
+  pricing:
+    deepseek-official:
+      default:
+        rate: { input: 0.27, output: 1.10 }        # base price
+        windows:                                    # peak/off-peak (crosses midnight OK)
+          - { from: "00:30", to: "08:30", tz: "Asia/Shanghai", label: off-peak,
+              rate: { input: 0.135, output: 0.55 } }
+        history:                                    # one-time changes; append-only
+          - { effectiveFrom: 2026-08-17T00:00:00+08:00,
+              rate: { input: 0.55, output: 2.19 } }
+```
+
+- **Price changes**: append a `history` version — old logs keep repricing with
+  the old price (audit-stable); the ledger never re-prices history with today's
+  rates.
+- **Peak/off-peak**: `windows` match the call's local time in the window's
+  timezone; matched entries carry the window label (`CostEntry.window`).
+- **Snapshot staleness**: the built-in DeepSeek snapshot is flagged stale in
+  `overview().snapshot` once older than `SNAPSHOT_STALE_AFTER_DAYS` (30), so
+  the panel can ask you to re-verify official prices.
+- **Change notification**: `cost-meter/price-changed` fires when an OpenRouter
+  refresh produces a different table or settings change the pricing config.
+
 ## Budgets & alerts (M2b)
 
 ```yaml
@@ -174,4 +206,5 @@ pnpm build       # tsdown → lib/
 - ✅ M2a: auto pricing sources — OpenRouter auto-fetch + DeepSeek built-in snapshot (manual always wins)
 - ✅ M2b: aggregation (day/month/project) + budget alerts (event + log channels)
 - ✅ M3: Web cost panel (Settings → 成本) + CSV/JSONL export + `dsh-cost-meter` CLI (audit/export)
+- ✅ M4: scheduled pricing — price-history versions + peak/off-peak windows + snapshot staleness + `price-changed` events
 - Upstream (optional): PR to expose `Model.cost` on `LlmResolvedModelInfo` + fold `dsh costs` into `apps/cli`

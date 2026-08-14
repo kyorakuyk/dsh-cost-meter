@@ -93,6 +93,36 @@ dsh-cost-meter:
 >
 > **实现偏差说明（M3 落地时）**：① Web 面板文案为硬编码中文（未接入 locale 注册，简化）；② overview 路由与 GUI 同源、无独立鉴权（复用 GUI 的部署信任边界）；③ `dsh costs replay` 官方子命令需上游 `apps/cli` 改动——以插件自带 `dsh-cost-meter` bin 替代（`npx dsh-cost-meter audit`），上游 PR 仍列为可选项。
 
+### 4.3 调度定价（M4）——应对调价与峰谷
+
+**背景（2026-08 实测）**：DeepSeek 已公布 8-17 生效的**大幅上调**与**峰谷定价**方案。当前设计三个缺陷：① 折叠用"此刻价"定价——调价后历史会话全部按新价重算（账/审计/预算全错）；② 快照静态、会静默过期；③ `Rate` 无时间维度，峰谷无法表达。根因：定价解析缺少 `atTime`。
+
+**模型**：价格从"一个数"升级为"按时间生效的调度"：
+
+```yaml
+cost-meter:
+  pricing:
+    deepseek-official:
+      default: { input: 0.27, output: 1.10 }        # 基准价（= 无历史版本的默认态）
+      windows:                                       # 峰谷时段（可跨午夜）
+        - { from: "00:30", to: "08:30", tz: "Asia/Shanghai", label: off-peak,
+            rate: { input: 0.135, output: 0.55 } }
+      history:                                       # 调价版本（append-only！旧价保留）
+        - { effectiveFrom: 2026-08-17T00:00:00+08:00,
+            rate: { input: 0.55, output: 2.19 } }
+```
+
+**解析**：`resolveRate(pricing, provider, model, atTime)`——
+1. **版本**：取 `history` 中 `effectiveFrom <= atTime < effectiveUntil` 的最新版本；无命中用基准；
+2. **时段**：把 `atTime` 按窗口 `tz`（默认 Asia/Shanghai）换算本地 HH:MM，匹配 `[from, to)`（`from > to` 视为跨午夜）；命中用窗口价，否则用版本/基准价。
+
+**关键不变式（审计稳定）**：改价 = **追加** history 版本，**绝不覆盖**。同一配置重放日志 → 同一结果；8-16 的调用永远按旧价，8-17 后按新价。
+
+**配套**：
+- `CostEntry.window` 记录命中的窗口 label（如 `off-peak`），面板可对比峰谷；
+- 快照过期检测：`SNAPSHOT_DATE` 距今 > `SNAPSHOT_STALE_AFTER_DAYS`（默认 30）→ `overview().snapshot.stale` 置位，面板提示"请核对官方价格"；
+- `cost-meter/price-changed` 事件：OpenRouter 刷新检测到价格变化 / settings 定价变更时触发（webhook/通知可订阅）。
+
 ## 5. 数据流
 
 ```
@@ -124,6 +154,7 @@ provider 上报 usage (session.event / tokenUsage 投影)
 | **M2a 自动定价来源** ✅ 已实现 | **B. OpenRouter 自动抓取**（`src/openrouter.ts`：`GET /api/v1/models` → 缓存 `$DSH_HOME/costs/pricing.openrouter.json`，`refreshHours` 刷新、失败沿用旧缓存 + 告警，并发刷新共享一次 in-flight）；**C. DeepSeek 内置快照表**（`src/snapshot.ts`，`SNAPSHOT_DATE` 标注）；**分层 resolver**（`src/resolver.ts`：手填 > 抓取 > 快照，`overwrite`/`preferSnapshots` 翻转）；`CostEntry.priceSource` 记录来源 | 31 个单测（含 mock fetch/时钟/并发/优先级/来源标记）+ typecheck + build + 冒烟 |
 | **M2b 聚合与告警** ✅ 已实现 | **聚合**（`src/aggregate.ts`：`aggregateCost(sessions)` 按天/月/项目分桶，纯函数可审计）；**预算**（`src/budget.ts`：session/project/month 三档金额 + 阈值 [50,80,100] 幂等触发）；**告警**（`ctx.emit('cost-meter/budget-alert')` 事件 + log 双通道，turn/end 自动评估，`budgetStatus()`/`evaluateBudgets()` 可按需调用）；`tracked` 会话宇宙自动登记（观察器 + `_sync`） | 41 个单测 + typecheck + build + 端到端冒烟（聚合分桶/站位/事件幂等） |
 | **M3 UI 与导出** ✅ 已实现 | **Web 成本面板**（`src/client/`：注册 `settings.section`"成本"页，经 host 的 `webServer` 路由 `/cost-meter/api/overview` 拉取 `overview()` 快照；纯数据 prep `overview-view.ts` 可测）；**CSV/JSONL 导出**（`src/export.ts` 纯函数：`sessionRows`/`bucketRows`/`toCsv`/`toJsonl`）；**CLI**（`bin/dsh-cost-meter.mjs`：`audit` + `export` 子命令，`npx dsh-cost-meter …` 即用；`scripts/audit.mjs` 改为薄包装） | 48 个单测 + typecheck + build（node + client 双 bundle）+ 端到端（HTTP 路由 200 + CLI 全子命令） |
+| **M4 调度定价** ✅ 已实现 | **时间感知定价**（`src/schedule.ts`：`resolveSpecAt(spec, atTime)` 版本选择 `effectiveFrom/effectiveUntil` + 峰谷窗口 `[from,to)` 跨午夜 + tz（默认 Asia/Shanghai））；**折叠按事件时间选价**（`foldEvent` 传 `event.time`，旧事件永远按旧价——append-only 价格历史，审计稳定）；**快照过期检测**（`snapshotStaleAt` + `overview().snapshot.stale`，30 天阈值）；**`cost-meter/price-changed` 事件**（OpenRouter 刷新差异 / settings 定价变更）；`CostEntry.window` 记录峰谷标签 | 59 个单测（新增 11 个：时段/版本/过期/事件/一致性）+ typecheck + build + 冒烟（峰谷+调价实测） |
 | **上游（可选）** | **A. 向官方提 PR**：给 `LlmResolvedModelInfo` 加 `cost` 字段，让 `ctx.llm.listModels/resolveModelInfo` 暴露 pi-ai 目录里已有的 `Model.cost`——成了则自动定价可直达目录价 | 上游合并后插件读公共接缝即可 |
 
 ## 7. 风险与边界

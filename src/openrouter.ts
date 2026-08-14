@@ -120,6 +120,11 @@ export class OpenRouterPriceFeed {
     return this.cache?.models[model]
   }
 
+  /** The current cache (for change detection), or undefined when never fetched. */
+  snapshot(): OpenRouterCache | undefined {
+    return this.cache
+  }
+
   /** Whether the cache is older than the configured freshness window. */
   isStale(): boolean {
     if (this.cache === undefined) return true

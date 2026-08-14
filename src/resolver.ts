@@ -9,14 +9,14 @@
  *   5. snapshot table — auto, version-stamped;
  *   6. undefined — reported as unpriced, never guessed.
  *
- * The composed resolver is a pure function of its option sources, so the
- * service and the audit script share the exact same precedence logic.
+ * Every source resolves at the call's instant (`atTime`), so M4 price
+ * versions and peak/off-peak windows apply uniformly across sources.
  *
  * @module dsh-cost-meter/resolver
  */
 
-import { resolveRate } from './pricing.ts'
-import type { PriceResolver, PriceSource, ProviderPricing, Rate, ResolvedPrice } from './types.ts'
+import { resolveScheduled } from './pricing.ts'
+import type { PriceResolver, ProviderPricing, Rate, ResolvedPrice } from './types.ts'
 
 /** OpenRouter source the resolver consults (the feed's lookup). */
 export interface OpenRouterResolverSource {
@@ -40,24 +40,29 @@ export interface PriceResolverOptions {
 
 /** Build the layered resolver over the given sources. */
 export function createPriceResolver(options: PriceResolverOptions): PriceResolver {
-  return (provider: string, model: string): ResolvedPrice | undefined => {
-    const manual = resolveRate(options.manual, provider, model)
+  return (provider: string, model: string, atTime: number): ResolvedPrice | undefined => {
+    const manual = resolveScheduled(options.manual, provider, model, atTime)
     const fetched = options.openrouter?.enabled === true && provider === 'openrouter'
       ? options.openrouter.lookup(model)
       : undefined
     const snapshot = options.snapshot?.enabled === true
-      ? resolveRate(options.snapshot.table, provider, model)
+      ? resolveScheduled(options.snapshot.table, provider, model, atTime)
       : undefined
 
     if (options.openrouter?.overwrite === true && fetched !== undefined) return priced(fetched, 'openrouter')
-    if (options.snapshot?.preferSnapshots === true && snapshot !== undefined) return priced(snapshot, 'snapshot')
-    if (manual !== undefined) return priced(manual, 'manual')
+    if (options.snapshot?.preferSnapshots === true && snapshot !== undefined) return priced(snapshot.rate, 'snapshot', snapshot)
+    if (manual !== undefined) return priced(manual.rate, 'manual', manual)
     if (fetched !== undefined) return priced(fetched, 'openrouter')
-    if (snapshot !== undefined) return priced(snapshot, 'snapshot')
+    if (snapshot !== undefined) return priced(snapshot.rate, 'snapshot', snapshot)
     return undefined
   }
 }
 
-function priced(rate: Rate, source: PriceSource): ResolvedPrice {
-  return { rate, source }
+function priced(rate: Rate, source: ResolvedPrice['source'], context?: { window?: string; versionFrom?: number }): ResolvedPrice {
+  return {
+    rate,
+    source,
+    ...(context?.window === undefined ? {} : { window: context.window }),
+    ...(context?.versionFrom === undefined ? {} : { versionFrom: context.versionFrom }),
+  }
 }

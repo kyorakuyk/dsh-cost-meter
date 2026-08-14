@@ -23,9 +23,52 @@ export interface Rate {
 /** Pricing for one provider route: a model-level override table and a route default. */
 export interface ProviderPricing {
   /** Rate applied to models of this provider without their own entry. */
-  default?: Rate
+  default?: RateLike
   /** Per-model overrides; a model's own rate wins over the route default. */
-  models?: Record<string, Rate>
+  models?: Record<string, RateLike>
+}
+
+/**
+ * A price that varies over time (M4): a flat rate, optional peak/off-peak
+ * windows, and an append-only price history. A plain {@link Rate} is accepted
+ * anywhere a `RateLike` is, meaning "always this rate".
+ */
+export type RateLike = Rate | RateSpec
+
+/** Time-variant rate specification. */
+export interface RateSpec {
+  /** Flat rate; also the default outside any matched window (within the applicable version). */
+  rate?: Rate
+  /** Recurring time-of-day windows (peak/off-peak). */
+  windows?: RateWindow[]
+  /** One-time price changes; append-only (old versions are never removed). */
+  history?: RateVersion[]
+}
+
+/** A recurring time-of-day rate window. */
+export interface RateWindow {
+  /** Local time "HH:MM" start, inclusive. */
+  from: string
+  /** Local time "HH:MM" end, exclusive; `from > to` crosses midnight. */
+  to: string
+  /** IANA timezone the window is expressed in (default Asia/Shanghai). */
+  tz?: string
+  /** Optional label surfaced on entries, e.g. "off-peak". */
+  label?: string
+  /** Rate applied inside the window. */
+  rate: Rate
+}
+
+/** One price version introduced by a one-time change. */
+export interface RateVersion {
+  /** Epoch ms when this version becomes effective (inclusive). */
+  effectiveFrom: number
+  /** Epoch ms when this version stops being effective (exclusive); absent = current. */
+  effectiveUntil?: number
+  /** Flat rate for this version. */
+  rate?: Rate
+  /** Peak/off-peak windows for this version (overrides the base windows). */
+  windows?: RateWindow[]
 }
 
 /** Plugin configuration: per-provider pricing table. */
@@ -138,10 +181,14 @@ export type PriceSource = 'manual' | 'openrouter' | 'snapshot'
 export interface ResolvedPrice {
   rate: Rate
   source: PriceSource
+  /** Matched window label (e.g. "off-peak") when a peak/off-peak window applied. */
+  window?: string
+  /** effectiveFrom of the price version that applied, when history matched one. */
+  versionFrom?: number
 }
 
 /** Layered price resolution: manual → openrouter → snapshot, in caller-chosen precedence. */
-export type PriceResolver = (provider: string, model: string) => ResolvedPrice | undefined
+export type PriceResolver = (provider: string, model: string, atTime: number) => ResolvedPrice | undefined
 
 /** Disjoint token buckets accumulated for one (provider, model) pair. */
 export interface EntryUsage {
@@ -167,6 +214,8 @@ export interface CostEntry {
   priced: boolean
   /** Provenance of the rate that priced this entry, when priced. */
   priceSource?: PriceSource
+  /** Matched peak/off-peak window label (e.g. "off-peak"), when a window applied. */
+  window?: string
 }
 
 /** A (provider, model) pair that produced usage but has no configured rate. */

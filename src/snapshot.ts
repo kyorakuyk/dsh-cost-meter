@@ -14,10 +14,30 @@
  * @module dsh-cost-meter/snapshot
  */
 
+import { asRateSpec } from './schedule.ts'
 import type { ProviderPricing } from './types.ts'
 
 /** When this snapshot was last verified against official pricing. */
 export const SNAPSHOT_DATE = '2026-01-15'
+
+/** Days after {@link SNAPSHOT_DATE} before the snapshot is reported stale. */
+export const SNAPSHOT_STALE_AFTER_DAYS = 30
+
+/**
+ * Whether the snapshot is stale at a given instant: a snapshot older than
+ * `maxAgeDays` is no longer trustworthy (M4) — the panel marks it and asks the
+ * user to verify official pricing, because DeepSeek publishes no machine-
+ * readable price API and rates can change on short notice.
+ * @param now - epoch ms.
+ * @param snapshotDate - ISO date the snapshot was verified on.
+ * @param maxAgeDays - staleness threshold in days.
+ * @returns true when the snapshot is older than the threshold.
+ */
+export function snapshotStaleAt(now: number, snapshotDate = SNAPSHOT_DATE, maxAgeDays = SNAPSHOT_STALE_AFTER_DAYS): boolean {
+  const verified = Date.parse(`${snapshotDate}T00:00:00Z`)
+  if (!Number.isFinite(verified)) return true
+  return now - verified > maxAgeDays * 86_400_000
+}
 
 /**
  * Snapshot table keyed like the manual `pricing` table: provider route →
@@ -41,5 +61,6 @@ export const DEEPSEEK_SNAPSHOT: Record<string, ProviderPricing> = {
  * @returns the snapshot rate, or undefined when the pair is not snapshotted.
  */
 export function snapshotRate(provider: string, model: string): import('./types.ts').Rate | undefined {
-  return DEEPSEEK_SNAPSHOT[provider]?.models?.[model]
+  const spec = asRateSpec(DEEPSEEK_SNAPSHOT[provider]?.models?.[model])
+  return spec?.rate
 }

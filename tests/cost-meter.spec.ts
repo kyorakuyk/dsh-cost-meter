@@ -30,7 +30,7 @@ function header(provider: string, model: string): EpochHeader {
   return canonicalHeader({ config: { provider, model } })
 }
 
-/** Append one billable model call: step/start → header → chunks → message(usage) → step/end. */
+/** Append one billable model call: step/start 鈫?header 鈫?chunks 鈫?message(usage) 鈫?step/end. */
 function appendCall(
   session: Session,
   provider: string,
@@ -69,17 +69,17 @@ function appendCall(
 
 describe('resolveRate', () => {
   it('lets a model override win over the route default', () => {
-    expect(resolveRate(PRICING, 'deepseek-official', 'deepseek-v4-pro')?.input).toBe(0.55)
+    expect(resolveRate(PRICING, 'deepseek-official', 'deepseek-v4-pro', 0)?.input).toBe(0.55)
   })
 
   it('falls back to the route default for unknown models', () => {
-    expect(resolveRate(PRICING, 'deepseek-official', 'deepseek-v4-flash')?.input).toBe(0.27)
-    expect(resolveRate(PRICING, 'gateway', 'anything')?.input).toBe(0.15)
+    expect(resolveRate(PRICING, 'deepseek-official', 'deepseek-v4-flash', 0)?.input).toBe(0.27)
+    expect(resolveRate(PRICING, 'gateway', 'anything', 0)?.input).toBe(0.15)
   })
 
   it('resolves undefined for unknown providers and empty tables', () => {
-    expect(resolveRate(PRICING, 'missing-provider', 'model')).toBeUndefined()
-    expect(resolveRate(undefined, 'deepseek-official', 'deepseek-v4-pro')).toBeUndefined()
+    expect(resolveRate(PRICING, 'missing-provider', 'model', 0)).toBeUndefined()
+    expect(resolveRate(undefined, 'deepseek-official', 'deepseek-v4-pro', 0)).toBeUndefined()
   })
 })
 
@@ -205,7 +205,7 @@ describe('sessionCost', () => {
       cacheReadTokens: 1_000_000,
       cacheWriteTokens: 1_000_000,
     })
-    // gateway has no cache rates → both fall back to the input rate 0.15.
+    // gateway has no cache rates 鈫?both fall back to the input rate 0.15.
     expect(meter.sessionCost(session).totalCost).toBeCloseTo(0.30, 9)
   })
 })
@@ -268,7 +268,7 @@ describe('layered resolver (M2a)', () => {
       manual: { 'deepseek-official': { default: { input: 9, output: 9 } } },
       snapshot: { enabled: true, preferSnapshots: false, table: DEEPSEEK_SNAPSHOT },
     })
-    expect(resolver('deepseek-official', 'deepseek-v4-flash')).toEqual({
+    expect(resolver('deepseek-official', 'deepseek-v4-flash', 0)).toEqual({
       rate: { input: 9, output: 9 },
       source: 'manual',
     })
@@ -279,18 +279,18 @@ describe('layered resolver (M2a)', () => {
       manual: {},
       snapshot: { enabled: true, preferSnapshots: false, table: DEEPSEEK_SNAPSHOT },
     })
-    expect(resolver('deepseek-official', 'deepseek-v4-flash')).toEqual({
+    expect(resolver('deepseek-official', 'deepseek-v4-flash', 0)).toEqual({
       rate: { input: 0.27, output: 1.10, cacheRead: 0.07, cacheWrite: 0.27 },
       source: 'snapshot',
     })
-    expect(resolver('deepseek-official', 'unknown-model')).toBeUndefined()
+    expect(resolver('deepseek-official', 'unknown-model', 0)).toBeUndefined()
   })
 
   it('is disabled by default and scoped to snapshotted providers', () => {
     const resolver = createPriceResolver({ snapshot: { enabled: false, preferSnapshots: false, table: DEEPSEEK_SNAPSHOT } })
-    expect(resolver('deepseek-official', 'deepseek-v4-flash')).toBeUndefined()
+    expect(resolver('deepseek-official', 'unknown-model', 0)).toBeUndefined()
     const enabled = createPriceResolver({ snapshot: { enabled: true, preferSnapshots: false, table: DEEPSEEK_SNAPSHOT } })
-    expect(enabled('other-provider', 'deepseek-v4-flash')).toBeUndefined()
+    expect(enabled('other-provider', 'deepseek-v4-flash', 0)).toBeUndefined()
   })
 
   it('preferSnapshots beats manual', () => {
@@ -298,7 +298,7 @@ describe('layered resolver (M2a)', () => {
       manual: { 'deepseek-official': { default: { input: 9, output: 9 } } },
       snapshot: { enabled: true, preferSnapshots: true, table: DEEPSEEK_SNAPSHOT },
     })
-    expect(resolver('deepseek-official', 'deepseek-v4-flash')?.source).toBe('snapshot')
+    expect(resolver('deepseek-official', 'deepseek-v4-flash', 0)?.source).toBe('snapshot')
   })
 
   it('applies fetched prices to the openrouter route, manual winning unless overwrite', () => {
@@ -307,7 +307,7 @@ describe('layered resolver (M2a)', () => {
       manual: { openrouter: { default: { input: 1, output: 2 } } },
       openrouter: { enabled: true, overwrite: false, lookup: fetched },
     })
-    expect(plain('openrouter', 'deepseek/deepseek-chat')).toEqual({
+    expect(plain('openrouter', 'deepseek/deepseek-chat', 0)).toEqual({
       rate: { input: 1, output: 2 },
       source: 'manual',
     })
@@ -315,7 +315,7 @@ describe('layered resolver (M2a)', () => {
       manual: { openrouter: { default: { input: 1, output: 2 } } },
       openrouter: { enabled: true, overwrite: true, lookup: fetched },
     })
-    expect(overwrite('openrouter', 'deepseek/deepseek-chat')).toEqual({
+    expect(overwrite('openrouter', 'deepseek/deepseek-chat', 0)).toEqual({
       rate: { input: 0.1, output: 0.2 },
       source: 'openrouter',
     })
@@ -352,7 +352,7 @@ describe('OpenRouterPriceFeed', () => {
     })
     expect(feed.lookup('a/b')).toEqual({ input: 1, output: 2 })
     expect(feed.isStale()).toBe(false) // 30 minutes old < 1h window
-    now = 1_000 + 2_700_000 // +45 min → 75 minutes old
+    now = 1_000 + 2_700_000 // +45 min 鈫?75 minutes old
     expect(feed.isStale()).toBe(true)
   })
 
@@ -523,7 +523,7 @@ describe('service budgets (M2b)', () => {
     const received: BudgetAlert[] = []
     ctx.on('cost-meter/budget-alert', (alert) => received.push(alert))
     const session = ctx.sessions.create()
-    // 0.15 + 0.15 = 0.30 → 100% crossed; both thresholds fire on one evaluation.
+    // 0.15 + 0.15 = 0.30 鈫?100% crossed; both thresholds fire on one evaluation.
     appendCall(session, 'gateway', 'openai/gpt-4o', { inputTokens: 1_000_000, outputTokens: 0 })
     appendCall(session, 'gateway', 'openai/gpt-4o', { inputTokens: 1_000_000, outputTokens: 0 }, { turn: 2 })
     const alerts = ctx.costMeter.evaluateBudgets()

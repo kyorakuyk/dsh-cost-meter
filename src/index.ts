@@ -28,9 +28,10 @@ import { createLedgerState, foldEvent, toReport, type LedgerState } from './ledg
 import { aggregateCosts } from './aggregate.ts'
 import { evaluateBudgets, normalizeThresholds } from './budget.ts'
 import { OVERVIEW_ROUTE } from './constants.ts'
+import { asRateSpec, validateSpec } from './schedule.ts'
 import { OpenRouterPriceFeed, DEFAULT_CACHE_FILE } from './openrouter.ts'
 import { createPriceResolver } from './resolver.ts'
-import { DEEPSEEK_SNAPSHOT, SNAPSHOT_DATE } from './snapshot.ts'
+import { DEEPSEEK_SNAPSHOT, SNAPSHOT_DATE, SNAPSHOT_STALE_AFTER_DAYS, snapshotStaleAt } from './snapshot.ts'
 import type {
   AggregateReport,
   BudgetAlert,
@@ -44,6 +45,7 @@ import type {
   PriceResolver,
   ProviderPricing,
   Rate,
+  RateSpec,
   ResolvedPrice,
   SnapshotConfig,
 } from './types.ts'
@@ -69,16 +71,35 @@ export type {
   SnapshotConfig,
   UnpricedEntry,
 } from './types.ts'
-export { costOf, resolveRate, TOKENS_PER_UNIT } from './pricing.ts'
+export { costOf, resolveRate, resolveScheduled, TOKENS_PER_UNIT } from './pricing.ts'
 export { assertLedgerConsistent, createLedgerState, foldEvent, toReport } from './ledger.ts'
 export type { LedgerState } from './ledger.ts'
 export { aggregateCosts, dayKey, monthKey, NO_PROJECT } from './aggregate.ts'
 export { crossingId, evaluateBudgets, normalizeThresholds } from './budget.ts'
+export {
+  asRateSpec,
+  applicableVersion,
+  DEFAULT_TZ,
+  inWindow,
+  isFlatRate,
+  localHHMM,
+  matchWindow,
+  resolveSpecAt,
+  validateSpec,
+  validateWindow,
+} from './schedule.ts'
+export type { ScheduledRate } from './schedule.ts'
 export { aggregateRows, bucketRows, csvField, sessionRows, toCsv, toJsonl } from './export.ts'
 export type { ExportRow } from './export.ts'
 export { createPriceResolver } from './resolver.ts'
 export { OpenRouterPriceFeed, parseOpenRouterListing } from './openrouter.ts'
-export { DEEPSEEK_SNAPSHOT, SNAPSHOT_DATE, snapshotRate } from './snapshot.ts'
+export {
+  DEEPSEEK_SNAPSHOT,
+  SNAPSHOT_DATE,
+  SNAPSHOT_STALE_AFTER_DAYS,
+  snapshotStaleAt,
+  snapshotRate,
+} from './snapshot.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -91,7 +112,21 @@ declare module '@deepseek-ai/cordis' {
      * (dsh-notification, a future Web panel) surface it without re-evaluating.
      */
     'cost-meter/budget-alert'(alert: BudgetAlert): void
+
+    /**
+     * Emitted when an automatic price source changed the effective prices:
+     * an OpenRouter refresh that produced a different table, or a settings
+     * commit that changed the pricing configuration.
+     */
+    'cost-meter/price-changed'(change: PriceChange): void
   }
+}
+
+/** What changed and why, for `cost-meter/price-changed`. */
+export interface PriceChange {
+  reason: 'openrouter-refresh' | 'settings'
+  /** Provider route affected; 'openrouter' for refreshes, absent for settings-wide changes. */
+  provider?: string
 }
 
 /** The settings namespace owning the pricing table. */
@@ -103,6 +138,8 @@ export { OVERVIEW_ROUTE } from './constants.ts'
 export interface CostOverview {
   aggregate: AggregateReport
   standings: BudgetStanding[]
+  /** Built-in snapshot freshness (M4). */
+  snapshot: { date: string; stale: boolean; staleAfterDays: number }
 }
 
 const RateSchema = z.object({
@@ -112,9 +149,32 @@ const RateSchema = z.object({
   cacheWrite: z.number().min(0),
 })
 
+const RateWindowSchema = z.object({
+  from: z.string().required(),
+  to: z.string().required(),
+  tz: z.string(),
+  label: z.string(),
+  rate: RateSchema,
+})
+
+const RateVersionSchema = z.object({
+  effectiveFrom: z.number().min(0).required(),
+  effectiveUntil: z.number().min(0),
+  rate: RateSchema,
+  windows: z.array(RateWindowSchema),
+})
+
+const RateSpecSchema = z.object({
+  rate: RateSchema,
+  windows: z.array(RateWindowSchema),
+  history: z.array(RateVersionSchema),
+})
+
+const RateLikeSchema = z.union([RateSchema, RateSpecSchema])
+
 const ProviderPricingSchema = z.object({
-  default: RateSchema,
-  models: z.dict(RateSchema),
+  default: RateLikeSchema,
+  models: z.dict(RateLikeSchema),
 })
 
 const OpenRouterAutoPricingSchema = z.object({
@@ -194,20 +254,33 @@ function validateConfigKeys(config: CostMeterConfig): void {
   }
 }
 
-/** Reject non-finite rates that a hand-written settings.yaml could smuggle past the schema. */
+/** Reject non-finite rates and malformed schedules that a hand-written settings.yaml could smuggle past the schema. */
 function validateRatesFinite(pricing: Record<string, ProviderPricing> | undefined): void {
   if (pricing === undefined) return
   for (const [provider, entry] of Object.entries(pricing)) {
-    const rates: ReadonlyArray<readonly [string, Rate | undefined]> = [
+    const specs: ReadonlyArray<readonly [string, Rate | RateSpec | undefined]> = [
       ['default', entry.default],
       ...Object.entries(entry.models ?? {}).map(([model, r]) => [`models.${model}`, r] as const),
     ]
-    for (const [label, rate] of rates) {
-      if (rate === undefined) continue
-      for (const field of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) {
-        const value = rate[field]
-        if (value !== undefined && !Number.isFinite(value)) {
-          throw new Error(`CostMeterConfig: ${provider}.${label}.${field} must be finite`)
+    for (const [label, rateLike] of specs) {
+      const spec = asRateSpec(rateLike)
+      if (spec === undefined) continue
+      validateSpec(`${provider}.${label}`, spec)
+      const rates: ReadonlyArray<readonly [string, Rate | undefined]> = [
+        ['rate', spec.rate],
+        ...(spec.windows ?? []).map((w): readonly [string, Rate] => [`windows.${w.from}-${w.to}`, w.rate]),
+        ...(spec.history ?? []).flatMap((v): ReadonlyArray<readonly [string, Rate | undefined]> => [
+          [`history@${v.effectiveFrom}.rate`, v.rate],
+          ...(v.windows ?? []).map((w): readonly [string, Rate] => [`history@${v.effectiveFrom}.windows.${w.from}-${w.to}`, w.rate]),
+        ]),
+      ]
+      for (const [field, rate] of rates) {
+        if (rate === undefined) continue
+        for (const key of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) {
+          const value = rate[key]
+          if (value !== undefined && !Number.isFinite(value)) {
+            throw new Error(`CostMeterConfig: ${provider}.${label}.${field}.${key} must be finite`)
+          }
         }
       }
     }
@@ -254,6 +327,8 @@ export class CostMeter extends Service {
   private budgets: BudgetConfig = {}
   private thresholds: number[] = [50, 80, 100]
   private channels: string[] = ['event', 'log']
+  /** Last committed pricing JSON, for settings-change detection. */
+  private lastPricingJson: string | undefined
 
   constructor(ctx: Context, config: CostMeterConfig = {}) {
     super(ctx, 'costMeter')
@@ -264,6 +339,7 @@ export class CostMeter extends Service {
     validateBudgets(initial.budgets)
     this.applyRuntime(initial)
     this.rebuild(initial)
+    this.lastPricingJson = JSON.stringify(initial.pricing)
 
     // The active source is a thunk: the resolved settings scope while one is
     // attached, the composition entry otherwise (SettingsSectionHooks contract).
@@ -278,8 +354,12 @@ export class CostMeter extends Service {
           validateRatesFinite(normalized.pricing)
           validateAutoPricing(normalized)
           validateBudgets(normalized.budgets)
+          const pricingJson = JSON.stringify(normalized.pricing)
+          const changed = pricingJson !== this.lastPricingJson
           this.applyRuntime(normalized)
           this.rebuild(normalized)
+          this.lastPricingJson = pricingJson
+          if (changed) this.ctx.emit('cost-meter/price-changed', { reason: 'settings' })
         } catch (error) {
           // Keep the last good runtime; a bad settings commit must not strand pricing.
           this.ctx.logger.error('dsh-cost-meter: keeping the last good configuration after an invalid settings section')
@@ -331,18 +411,27 @@ export class CostMeter extends Service {
    * @param model - model id.
    * @returns the resolved rate plus provenance, or undefined when unpriced.
    */
-  resolvePrice(provider: string, model: string): ResolvedPrice | undefined {
-    return this.resolver(provider, model)
+  /**
+   * Layered price for one (provider, model) at an instant: manual → openrouter
+   * → snapshot, with M4 price versions and peak/off-peak windows applied.
+   * @param provider - provider route key.
+   * @param model - model id.
+   * @param atTime - epoch ms of the call being priced (default now).
+   * @returns the resolved rate plus provenance, or undefined when unpriced.
+   */
+  resolvePrice(provider: string, model: string, atTime: number = Date.now()): ResolvedPrice | undefined {
+    return this.resolver(provider, model, atTime)
   }
 
   /**
    * The rate half of {@link resolvePrice}, for callers that ignore provenance.
    * @param provider - provider route key.
    * @param model - model id.
-   * @returns the configured rate, or undefined when unpriced.
+   * @param atTime - epoch ms of the call being priced (default now).
+   * @returns the rate applicable at `atTime`, or undefined when unpriced.
    */
-  resolveRate(provider: string, model: string): Rate | undefined {
-    return this.resolver(provider, model)?.rate
+  resolveRate(provider: string, model: string, atTime: number = Date.now()): Rate | undefined {
+    return this.resolver(provider, model, atTime)?.rate
   }
 
   /**
@@ -356,7 +445,7 @@ export class CostMeter extends Service {
    * @returns estimated USD, or undefined when the pair is unpriced or token-meter is absent.
    */
   estimateCost(message: Message, provider: string, model: string): number | undefined {
-    const resolved = this.resolver(provider, model)
+    const resolved = this.resolver(provider, model, Date.now())
     if (resolved === undefined) return undefined
     const meter = this.ctx.get('tokenMeter') as { estimateMessage(message: Message): number } | undefined
     if (meter === undefined) return undefined
@@ -364,11 +453,33 @@ export class CostMeter extends Service {
   }
 
   /**
-   * Force an OpenRouter refresh (exposed for maintenance and tests).
+   * Force an OpenRouter refresh; emits `cost-meter/price-changed` when the
+   * fetched table differs from the previous one.
    * @returns the refreshed cache, or undefined when the feed is unconfigured or the fetch failed.
    */
-  refreshOpenRouter(): Promise<import('./openrouter.ts').OpenRouterCache | undefined> {
-    return this.feed?.refresh() ?? Promise.resolve(undefined)
+  async refreshOpenRouter(): Promise<import('./openrouter.ts').OpenRouterCache | undefined> {
+    const before = this.feed?.snapshot()
+    const cache = await this.feed?.refresh()
+    const after = cache
+    if (before !== undefined && after !== undefined
+      && JSON.stringify(before.models) !== JSON.stringify(after.models)) {
+      this.ctx.emit('cost-meter/price-changed', { reason: 'openrouter-refresh', provider: 'openrouter' })
+    }
+    return cache
+  }
+
+  /**
+   * Built-in snapshot freshness for surfaces (M4): a snapshot older than
+   * `SNAPSHOT_STALE_AFTER_DAYS` is flagged stale so the UI can ask for a
+   * manual re-verification.
+   * @returns the snapshot's verification date and staleness.
+   */
+  snapshotStatus(): { date: string; stale: boolean; staleAfterDays: number } {
+    return {
+      date: SNAPSHOT_DATE,
+      stale: snapshotStaleAt(Date.now()),
+      staleAfterDays: SNAPSHOT_STALE_AFTER_DAYS,
+    }
   }
 
   /**
@@ -395,7 +506,11 @@ export class CostMeter extends Service {
    * @returns the overview payload.
    */
   overview(): CostOverview {
-    return { aggregate: aggregateCosts(this.tracked, this.resolver), standings: this.buildStandings() }
+    return {
+      aggregate: aggregateCosts(this.tracked, this.resolver),
+      standings: this.buildStandings(),
+      snapshot: this.snapshotStatus(),
+    }
   }
 
   /**

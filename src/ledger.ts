@@ -53,8 +53,9 @@ export function createLedgerState(): LedgerState {
  * Fold one session event into the ledger.
  * @param state - ledger state to mutate.
  * @param event - the next durable event.
- * @param resolve - layered price resolution consulted per priced call, so a
- *   hot-reloaded table or a refreshed feed reaches the next fold without restart.
+ * @param resolve - layered price resolution consulted per priced call; the fold
+ *   passes the event's own timestamp, so price versions and peak/off-peak
+ *   windows apply at the instant the call happened (M4).
  */
 export function foldEvent(
   state: LedgerState,
@@ -77,7 +78,7 @@ export function foldEvent(
       // session log never produces it (headers precede steps), but a replay of
       // a malformed log must not invent an attribution.
       if (provider === undefined || model === undefined) break
-      foldUsage(state, provider, model, usage, resolve)
+      foldUsage(state, provider, model, usage, resolve, event.time)
       break
     }
     default:
@@ -92,6 +93,7 @@ function foldUsage(
   model: string,
   usage: TokenUsage,
   resolve: PriceResolver,
+  atTime: number,
 ): void {
   const k = key(provider, model)
   let entry = state.entries.get(k)
@@ -112,11 +114,12 @@ function foldUsage(
   entry.usage.cacheReadTokens += usage.cacheReadTokens ?? 0
   entry.usage.cacheWriteTokens += usage.cacheWriteTokens ?? 0
 
-  const resolved = resolve(provider, model)
+  const resolved = resolve(provider, model, atTime)
   if (resolved !== undefined) {
     entry.cost += costOf(usage, resolved.rate)
     entry.priced = true
     entry.priceSource = resolved.source
+    if (resolved.window !== undefined) entry.window = resolved.window
     state.totalCost += costOf(usage, resolved.rate)
     return
   }
@@ -143,6 +146,7 @@ function cloneEntry(entry: CostEntry): CostEntry {
     cost: entry.cost,
     priced: entry.priced,
     ...(entry.priceSource === undefined ? {} : { priceSource: entry.priceSource }),
+    ...(entry.window === undefined ? {} : { window: entry.window }),
   }
 }
 

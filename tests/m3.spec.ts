@@ -123,6 +123,7 @@ describe('overview + panel view (M3)', () => {
         byProject: { '/b': { cost: 34.5, calls: 2, unpricedCalls: 0 }, '/a': { cost: 1200, calls: 1, unpricedCalls: 1 } },
       },
       standings: [{ scope: 'month', key: '2026-01', spent: 100, amount: 200, pct: 50 }],
+      snapshot: { date: '2026-01-15', stale: false, staleAfterDays: 30 },
     })
     expect(view.totalCost).toBe(1234.5)
     expect(view.projects[0]).toMatchObject({ key: '/a', cost: 1200 }) // sorted desc

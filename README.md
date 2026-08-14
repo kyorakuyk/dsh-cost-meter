@@ -19,7 +19,7 @@ table, and expose a per-(provider, model) cost breakdown.
 ## Install
 
 ```sh
-dsh plugin --profile web add https://github.com/kyorakuyk/dsh-cost-meter/archive/refs/tags/v0.1.0.tar.gz
+dsh plugin --profile web add https://github.com/kyorakuyk/dsh-cost-meter/archive/refs/tags/v0.2.0.tar.gz
 ```
 
 Or link the package into the profile's module directory and add the plugin row
